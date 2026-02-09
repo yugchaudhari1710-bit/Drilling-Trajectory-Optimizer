@@ -12,7 +12,7 @@ def optimize_trajectory_NE(surface_NEZ, target_NEZ):
     MD_S = TVD + 1.2 * HD
     MD_L = TVD + 1.5 * HD
 
-    Cm = 2000
+    Cm = 28000
     Cc_J = 100000
     Cc_S = 250000
     Cc_L = 500000

@@ -1,60 +1,150 @@
 import math
-import streamlit as st
+import random
+import pandas as pd
+import matplotlib.pyplot as plt
 
-def optimize_trajectory_NE(surface_NEZ, target_NEZ):
-    Ns, Es, Zs = surface_NEZ
-    Nt, Et, Zt = target_NEZ
+# ---------------- USER INPUT ----------------
+# Change values here easily
+surface = (0, 0, 0)              # (North, East, TVD)
+target = (1200, 800, 2500)
 
-    HD = math.sqrt((Nt - Ns)**2 + (Et - Es)**2)
-    TVD = abs(Zt - Zs)
+# ---------------- TRAJECTORY FUNCTION ----------------
+def generate_well_trajectory(surface, target, step=50):
+    Ns, Es, Zs = surface
+    Nt, Et, Zt = target
 
-    MD_J = math.sqrt(TVD**2 + HD**2)
-    MD_S = TVD + 1.2 * HD
-    MD_L = TVD + 1.5 * HD
+    N, E, Z = Ns, Es, Zs
+    inclination = 0
+    MD = 0
 
-    Cm = 28000
-    Cc_J = 100000
-    Cc_S = 250000
-    Cc_L = 500000
+    data = []
 
-    cost_J = Cm * MD_J + Cc_J
-    cost_S = Cm * MD_S + Cc_S
-    cost_L = Cm * MD_L + Cc_L
+    while Z < Zt:
+        dN = Nt - N
+        dE = Et - E
+        dZ = Zt - Z
 
-    results = {
-        "J-Type": {"MD": MD_J, "Cost": cost_J},
-        "S-Type": {"MD": MD_S, "Cost": cost_S},
-        "L-Type": {"MD": MD_L, "Cost": cost_L}
-    }
+        target_inc = math.degrees(math.atan2(
+            math.sqrt(dN**2 + dE**2), dZ
+        ))
+        azimuth = math.degrees(math.atan2(dE, dN))
 
-    best_type = min(results, key=lambda k: results[k]["Cost"])
+        # Build control
+        build_rate = 1.5
+        if inclination < target_inc:
+            inclination += min(build_rate, target_inc - inclination)
 
-    return HD, TVD, results, best_type
+        # Subsurface uncertainty
+        inclination += random.uniform(-2, 2)
+
+        inclination = max(0, min(85, inclination))
+
+        inc_rad = math.radians(inclination)
+        az_rad = math.radians(azimuth)
+
+        dZ_step = step * math.cos(inc_rad)
+        dH_step = step * math.sin(inc_rad)
+
+        dN_step = dH_step * math.cos(az_rad)
+        dE_step = dH_step * math.sin(az_rad)
+
+        N += dN_step
+        E += dE_step
+        Z += dZ_step
+        MD += step
+
+        data.append({
+            "MD": MD,
+            "Inclination": inclination,
+            "Azimuth": azimuth,
+            "Northing": N,
+            "Easting": E,
+            "TVD": Z
+        })
+
+        if Z >= Zt:
+            break
+
+    return pd.DataFrame(data)
 
 
-st.title("Drilling Trajectory Optimization Tool")
+# ---------------- GENERATE ----------------
+df_actual = generate_well_trajectory(surface, target)
 
-st.header("Enter Surface Coordinates")
-Ns = st.number_input("Surface Northing (m)")
-Es = st.number_input("Surface Easting (m)")
-Zs = st.number_input("Surface TVD (m)")
+# ---------------- SECTION IDENTIFICATION ----------------
+sections = []
 
-st.header("Enter Target Coordinates")
-Nt = st.number_input("Target Northing (m)")
-Et = st.number_input("Target Easting (m)")
-Zt = st.number_input("Target TVD (m)")
+for i in range(1, len(df_actual)):
+    inc_prev = df_actual.loc[i-1, "Inclination"]
+    inc_curr = df_actual.loc[i, "Inclination"]
 
-if st.button("Optimize Trajectory"):
-    surface = (Ns, Es, Zs)
-    target = (Nt, Et, Zt)
+    diff = inc_curr - inc_prev
 
-    HD, TVD, results, best = optimize_trajectory_NE(surface, target)
+    if inc_curr < 2:
+        section = "Vertical"
+    elif diff > 0.2:
+        section = "Build"
+    elif diff < -0.2:
+        section = "Drop"
+    else:
+        section = "Hold"
 
-    st.subheader("Results")
-    st.write(f"Horizontal Displacement (HD): {HD:.2f} m")
-    st.write(f"True Vertical Depth (TVD): {TVD:.2f} m")
+    sections.append(section)
 
-    for traj, data in results.items():
-        st.write(f"**{traj}** → MD: {data['MD']:.2f} m | Cost: ₹{data['Cost']:.2f}")
+sections.insert(0, "Vertical")
+df_actual["Section"] = sections
 
-    st.success(f"Most Economical Trajectory: {best}")
+# ---------------- IDEAL PATH ----------------
+def planned_path(surface, target, steps=50):
+    Ns, Es, Zs = surface
+    Nt, Et, Zt = target
+
+    N_vals, E_vals, Z_vals = [], [], []
+
+    for i in range(steps):
+        frac = i / (steps - 1)
+        N_vals.append(Ns + frac * (Nt - Ns))
+        E_vals.append(Es + frac * (Et - Es))
+        Z_vals.append(Zs + frac * (Zt - Zs))
+
+    return N_vals, E_vals, Z_vals
+
+
+N_plan, E_plan, Z_plan = planned_path(surface, target)
+
+# ---------------- COLOR MAP ----------------
+color_map = {
+    "Vertical": "blue",
+    "Build": "orange",
+    "Hold": "green",
+    "Drop": "red"
+}
+
+# ---------------- 3D PLOT WITH COLORS ----------------
+fig = plt.figure()
+ax = fig.add_subplot(111, projection='3d')
+
+# Plot each section separately
+for sec in df_actual["Section"].unique():
+    subset = df_actual[df_actual["Section"] == sec]
+    ax.plot(subset["Northing"], subset["Easting"], subset["TVD"],
+            label=sec, color=color_map[sec])
+
+# Planned path
+ax.plot(N_plan, E_plan, Z_plan, linestyle='dashed', label="Planned", color="black")
+
+ax.set_xlabel("Northing")
+ax.set_ylabel("Easting")
+ax.set_zlabel("TVD")
+ax.set_title("Well Trajectory (Color-coded Sections)")
+
+ax.legend()
+ax.invert_zaxis()
+
+plt.show()
+
+# ---------------- EXPORT ----------------
+df_actual.to_excel("well_trajectory.xlsx", index=False)
+
+print("\n✅ Survey table saved as: well_trajectory.xlsx")
+print(df_actual.head())
